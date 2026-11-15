@@ -8,6 +8,13 @@ const send = element('send');
 const messages = element('messages');
 const askStatus = element('ask-status');
 const uploadStatus = element('upload-status');
+const hosted = document.body.dataset.hosted === 'true';
+const maxUploadMb = hosted ? 4 : 10;
+const appStatus = hosted ? 'Hosted app' : 'Local app';
+const searchStatus = hosted ? 'Server document search' : 'Offline document search';
+element('upload-limit').textContent = `${maxUploadMb} MB`;
+element('model-status').textContent = appStatus;
+if (hosted) mode.options[1].textContent = 'Server search';
 
 async function api(path, body) {
   const response = await fetch(path, body === undefined ? undefined : {
@@ -59,8 +66,9 @@ source.addEventListener('change', updateSource);
 mode.addEventListener('change', () => {
   element('mode-note').textContent = mode.value === 'gemini'
     ? 'Gemini receives your question and the selected document text.'
-    : 'Your question and documents stay on this computer.';
-  element('model-status').textContent = 'Local app';
+    : hosted ? 'Document Desk searches the hosted library without calling Gemini.'
+      : 'Your question and documents stay on this computer.';
+  element('model-status').textContent = appStatus;
 });
 files.addEventListener('change', async () => {
   const selected = Array.from(files.files);
@@ -71,7 +79,7 @@ files.addEventListener('change', async () => {
   const saved = [];
   for (const file of selected) {
     try {
-      if (file.size > 10 * 1024 * 1024) throw new Error('This file exceeds the 10 MB upload limit.');
+      if (file.size > maxUploadMb * 1024 * 1024) throw new Error(`This file exceeds the ${maxUploadMb} MB upload limit.`);
       const query = new URLSearchParams({ name: file.name });
       const response = await fetch(`/api/documents?${query}`, {
         method: 'POST',
@@ -120,7 +128,7 @@ element('ask').addEventListener('submit', async event => {
   try {
     const requestedMode = mode.value;
     const { citations, model } = await api('/api/ask', { question: text, sourceId: source.value, mode: requestedMode });
-    if (mode.value === requestedMode) element('model-status').textContent = model ?? 'Offline document search';
+    if (mode.value === requestedMode) element('model-status').textContent = model ?? searchStatus;
     if (question.value.trim() === text) question.value = '';
     if (!citations.length) answer.append(node('p', 'I couldn’t find a matching passage. Try using the terms that appear in your documents.'));
     for (const { name, quote } of citations) {

@@ -18,3 +18,12 @@ The server listens on loopback. **Gemini** mode uses the key in the local, Git-i
 Document questions search your uploaded documents by default. To browse the web, open **Search the web**, enter a separate query, and click **Search DuckDuckGo**. The browser opens DuckDuckGo results in a new tab and submits only that query. Uploaded files, document excerpts, and chat messages stay out of the search request. To use a file you find in a document answer, download it and upload it to Document Desk.
 
 Each question is evaluated independently against the selected documents. Include the relevant subject when asking a follow-up.
+
+## Deploy on Vercel
+
+1. Import this repository into Vercel and use the Node.js server entry point, `server.mjs`. Keep Vercel system environment variables exposed so the app can detect the deployment.
+2. Create a **private** Vercel Blob store and connect it to the project with a read-write token. Verify that `BLOB_READ_WRITE_TOKEN` is available in the environment you deploy.
+3. Set `DOCUMENT_DESK_PASSWORD` to a strong password and `GEMINI_API_KEY` to your Gemini key in the project environment variables. Redeploy after setting them.
+4. Open the deployed URL. Sign in with username `document-desk` and the password you configured.
+
+The hosted app keeps its shared Markdown library in private Blob storage. Anyone with the app password can access that library. Hosted uploads are limited to 4 MB per file, and **Server search** searches the hosted library without calling Gemini. To bring documents from your local library into Vercel, upload them from the deployed app.

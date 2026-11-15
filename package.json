@@ -9,6 +9,7 @@
     "start": "node --env-file-if-exists=.env server.mjs"
   },
   "dependencies": {
+    "@vercel/blob": "2.6.1",
     "mammoth": "^1.13.0",
     "pdfjs-dist": "^6.5.438",
     "turndown": "^7.2.5",

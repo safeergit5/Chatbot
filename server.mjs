@@ -1,13 +1,18 @@
 import { createServer } from 'node:http';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { findPassages } from './search.mjs';
 import { askGemini } from './gemini.mjs';
+import { BlobPreconditionFailedError, get, put } from '@vercel/blob';
 
 const port = Number(process.env.PORT ?? 3000);
+const hosted = process.env.VERCEL === '1';
+const password = process.env.DOCUMENT_DESK_PASSWORD;
+const credentials = password ? `Basic ${Buffer.from(`document-desk:${password}`).toString('base64')}` : null;
+const blobPath = 'document-desk/documents.md';
 const localDataRoot = process.platform === 'win32'
   ? process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local')
   : process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
@@ -15,7 +20,7 @@ const libraryDirectory = join(localDataRoot, 'Document Desk');
 const library = join(libraryDirectory, 'documents.md');
 const libraryHeading = '# Document library\n';
 const maxDocumentLength = 200_000;
-const maxUploadBytes = 10 * 1024 * 1024;
+const maxUploadBytes = (hosted ? 4 : 10) * 1024 * 1024;
 const maxLibraryLength = 700_000;
 let pendingWrite = Promise.resolve();
 
@@ -23,15 +28,24 @@ function failure(status, message) {
   return Object.assign(new Error(message), { status });
 }
 
-async function readLibrary() {
-  let markdown;
+async function readMarkdown() {
+  if (hosted) {
+    if (!process.env.BLOB_READ_WRITE_TOKEN) {
+      throw failure(503, 'Connect a private Vercel Blob store to enable the document library.');
+    }
+    const current = await get(blobPath, { access: 'private', useCache: false });
+    if (!current) return { markdown: libraryHeading };
+    return { markdown: await new Response(current.stream).text(), etag: current.blob.etag };
+  }
   try {
-    markdown = await readFile(library, 'utf8');
+    return { markdown: await readFile(library, 'utf8') };
   } catch (error) {
-    if (error.code === 'ENOENT') return [];
+    if (error.code === 'ENOENT') return { markdown: libraryHeading };
     throw error;
   }
+}
 
+function parseLibrary(markdown) {
   const boundary = /\n## ([^\n]+)\n<!-- document:([\w-]+):(\d+) -->\n(`{3,})text\n/y;
   if (!markdown.startsWith(libraryHeading)) throw new Error('Invalid document library');
   boundary.lastIndex = libraryHeading.length;
@@ -49,22 +63,46 @@ async function readLibrary() {
   return documents;
 }
 
+async function readLibrary() {
+  return parseLibrary((await readMarkdown()).markdown);
+}
+
 function saveDocument(document) {
   const operation = pendingWrite.then(async () => {
-    const documents = await readLibrary();
-    const total = documents.reduce((sum, item) => sum + item.content.length, document.content.length);
-    if (total > maxLibraryLength || documents.length >= 100) {
-      throw failure(413, 'The Markdown library is full (700,000 characters or 100 documents).');
-    }
-    const existing = documents.length ? await readFile(library, 'utf8') : libraryHeading;
     const fenceLength = [...document.content.matchAll(/`{3,}/g)]
       .reduce((length, match) => Math.max(length, match[0].length + 1), 3);
     const fence = '`'.repeat(fenceLength);
     const section = `\n## ${document.name}\n<!-- document:${document.id}:${document.content.length} -->\n${fence}text\n${document.content}\n${fence}\n`;
-    const temporary = join(libraryDirectory, 'documents.tmp');
-    await mkdir(libraryDirectory, { recursive: true });
-    await writeFile(temporary, existing + section, 'utf8');
-    await rename(temporary, library);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { markdown, etag } = await readMarkdown();
+      const documents = parseLibrary(markdown);
+      const total = documents.reduce((sum, item) => sum + item.content.length, document.content.length);
+      if (total > maxLibraryLength || documents.length >= 100) {
+        throw failure(413, 'The Markdown library is full (700,000 characters or 100 documents).');
+      }
+      const updated = markdown + section;
+      if (!hosted) {
+        const temporary = join(libraryDirectory, 'documents.tmp');
+        await mkdir(libraryDirectory, { recursive: true });
+        await writeFile(temporary, updated, 'utf8');
+        await rename(temporary, library);
+        return;
+      }
+      try {
+        await put(blobPath, updated, {
+          access: 'private',
+          contentType: 'text/markdown; charset=utf-8',
+          allowOverwrite: Boolean(etag),
+          ifMatch: etag,
+        });
+        return;
+      } catch (error) {
+        if (error instanceof BlobPreconditionFailedError) continue;
+        if (!etag && (await readMarkdown()).etag) continue;
+        throw error;
+      }
+    }
+    throw failure(409, 'The library changed during upload. Please try uploading again.');
   });
   pendingWrite = operation.catch(() => {});
   return operation;
@@ -148,10 +186,15 @@ async function answerQuestion({ question, sourceId, mode = 'offline' }) {
 }
 
 const assets = new Map([
-  ['/', ['index.html', 'text/html; charset=utf-8']],
-  ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
-  ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
+  ['/', [new URL('./public/index.html', import.meta.url), 'text/html; charset=utf-8']],
+  ['/app.js', [new URL('./public/app.js', import.meta.url), 'text/javascript; charset=utf-8']],
+  ['/styles.css', [new URL('./public/styles.css', import.meta.url), 'text/css; charset=utf-8']],
 ]);
+
+function authorized(request) {
+  const digest = value => createHash('sha256').update(value).digest();
+  return timingSafeEqual(digest(request.headers.authorization ?? ''), digest(credentials));
+}
 
 createServer(async (request, response) => {
   response.setHeader('Cache-Control', 'no-store');
@@ -165,15 +208,27 @@ createServer(async (request, response) => {
 
   try {
     const host = request.headers.host;
-    if (![ `localhost:${port}`, `127.0.0.1:${port}` ].includes(host)
-      || (request.headers.origin && request.headers.origin !== `http://${host}`)) {
+    if (!hosted && ![`localhost:${port}`, `127.0.0.1:${port}`].includes(host)) {
       throw failure(403, 'Open the app from its local address.');
     }
-    const { pathname, searchParams } = new URL(request.url, `http://${host}`);
+    if (!host || !/^[a-z0-9.-]+(?::\d+)?$/i.test(host)) throw failure(400, 'Invalid request host.');
+    const origin = new URL(`${hosted ? 'https' : 'http'}://${host}`).origin;
+    const { pathname, searchParams, origin: requestOrigin } = new URL(request.url, origin);
+    if (requestOrigin !== origin || (request.headers.origin && request.headers.origin !== origin)) {
+      throw failure(403, 'Use the app from the same site as this request.');
+    }
+    if (hosted && credentials && !authorized(request)) {
+      response.setHeader('WWW-Authenticate', 'Basic realm="Document Desk", charset="UTF-8"');
+      throw failure(401, 'Sign in to Document Desk.');
+    }
+    if (hosted && pathname.startsWith('/api/') && !credentials) {
+      throw failure(503, 'Set DOCUMENT_DESK_PASSWORD in Vercel and redeploy to enable private document access.');
+    }
     const asset = assets.get(pathname);
     if (request.method === 'GET' && asset) {
       const [filename, type] = asset;
-      const content = await readFile(new URL(`./public/${filename}`, import.meta.url));
+      let content = await readFile(filename, 'utf8');
+      if (hosted && pathname === '/') content = content.replace('data-hosted="false"', 'data-hosted="true"');
       response.writeHead(200, { 'Content-Type': type });
       response.end(content);
     } else if (request.method === 'GET' && pathname === '/api/documents') {
@@ -208,6 +263,6 @@ createServer(async (request, response) => {
     if (!error.status) console.error(error.message);
     send(error.status ?? 500, { error: error.status ? error.message : 'Could not process the request.' });
   }
-}).listen(port, '127.0.0.1', () => {
-  console.log(`Document Desk is running at http://127.0.0.1:${port}`);
+}).listen(port, hosted ? undefined : '127.0.0.1', () => {
+  console.log(`Document Desk is listening on port ${port}`);
 });
