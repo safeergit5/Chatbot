@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Find cited passages in your documents with Gemini or offline search.">
+  <title>Document Desk</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="mark" aria-hidden="true">▤</span> Document Desk</a>
+    <span class="privacy-status" id="model-status">Local app</span>
+  </header>
+  <div class="workspace">
+    <aside>
+      <section class="library" aria-labelledby="library-heading">
+        <h2 id="library-heading">Documents <span id="count">0</span></h2>
+        <label class="upload">
+          <input id="files" type="file" accept=".pdf,.docx,.doc,.md,.markdown,.txt" multiple>
+          <strong><span aria-hidden="true">↑</span> Upload documents</strong>
+          <small>PDF, Word, Markdown, or text · 10 MB per file</small>
+        </label>
+        <p id="upload-status" class="status" role="status"></p>
+        <ul id="documents"></ul>
+      </section>
+      <details class="web-search">
+        <summary>Search the web</summary>
+        <form action="https://duckduckgo.com/" method="get" target="_blank" rel="noopener noreferrer">
+          <label for="web-query">DuckDuckGo query</label>
+          <input id="web-query" name="q" type="search" required pattern=".*\S.*" maxlength="500" autocomplete="off">
+          <button type="submit">Search DuckDuckGo <span aria-hidden="true">↗</span></button>
+          <small>Opens a new tab. Only this query is sent.</small>
+        </form>
+      </details>
+    </aside>
+    <main>
+      <div class="chat-header">
+        <label for="mode">Answer with</label>
+        <select id="mode"><option value="gemini">Gemini</option><option value="offline">Offline</option></select>
+        <label for="source">Search in</label>
+        <select id="source"><option value="">All documents</option></select>
+      </div>
+      <div class="conversation" id="conversation">
+        <div class="intro" id="intro">
+          <span class="intro-mark" aria-hidden="true">▤</span>
+          <h1>Ask your documents.</h1>
+          <p>Ask a question to find matching passages and their source files.</p>
+        </div>
+        <div id="messages" role="log" aria-label="Conversation"></div>
+      </div>
+      <form id="ask">
+        <label class="sr-only" for="question">Question</label>
+        <div class="composer">
+          <textarea id="question" rows="2" maxlength="4000" placeholder="Ask a question about your documents…" required></textarea>
+          <button id="send" type="submit">Ask <span aria-hidden="true">↑</span></button>
+        </div>
+        <p id="mode-note" class="status">Gemini receives your question and the selected document text.</p>
+        <p id="ask-status" class="status" role="status"></p>
+      </form>
+    </main>
+  </div>
+</body>
+</html>
